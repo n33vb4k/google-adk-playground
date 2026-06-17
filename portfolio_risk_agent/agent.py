@@ -1,11 +1,25 @@
 import math
 import numpy as np
 from google.adk.agents import Agent
+from google.adk.models.anthropic_llm import AnthropicLlm
 from config.settings import get_settings
 from portfolio_risk_agent.utils import _fetch_daily_closes, _annualised_volatility, _align_time_series, _log_returns_matrix
 
 settings = get_settings()
 logger = settings.get_logger()
+
+
+def _build_model():
+    """Builds the configured LLM backend (see Settings.model_provider).
+
+    Anthropic models are instantiated explicitly via AnthropicLlm rather than
+    passed as a plain "claude-..." string — ADK's model registry resolves
+    bare Claude model strings to the Vertex AI-backed `Claude` class, which
+    needs GOOGLE_CLOUD_PROJECT/LOCATION instead of ANTHROPIC_API_KEY.
+    """
+    if settings.model_provider == "anthropic":
+        return AnthropicLlm(model=settings.anthropic_model)
+    return settings.google_model
 
 
 def get_asset_volatility(ticker: str) -> dict:
@@ -102,9 +116,9 @@ def compute_portfolio_volatility(tickers: list[str], weights: list[float]) -> di
 
 
 root_agent = Agent(
-    model="gemini-flash-latest",
+    model=_build_model(),
     name="portfolio_risk_agent",
-    description="Analyses portfolio risk using live Alpha Vantage market data.",
+    description="Analyses portfolio risk using live market data.",
     instruction=(
         "You are a portfolio risk analyst. Help users understand the volatility "
         "of individual assets and portfolios. Use the tools provided to fetch "

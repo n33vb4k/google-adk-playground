@@ -2,6 +2,7 @@ import math
 import numpy as np
 from functools import lru_cache
 import requests
+import yfinance as yf
 
 from config.settings import get_settings
 
@@ -10,7 +11,7 @@ logger = settings.get_logger()
 
 
 @lru_cache(maxsize=128)
-def _fetch_daily_closes(ticker: str) -> tuple[tuple[str, float], ...] | str:
+def _fetch_daily_closes_alpha_vantage(ticker: str) -> tuple[tuple[str, float], ...] | str:
     """Returns list of closing prices (newest first) or an error string."""
     params = {
         "function": "TIME_SERIES_DAILY",
@@ -25,7 +26,7 @@ def _fetch_daily_closes(ticker: str) -> tuple[tuple[str, float], ...] | str:
         return str(e)
 
     data = resp.json()
-    logger.info(f"Fetched data for {ticker}")
+    logger.info(f"Fetched data for {ticker} via Alpha Vantage")
 
     if "Error Message" in data:
         return data["Error Message"]
@@ -41,6 +42,32 @@ def _fetch_daily_closes(ticker: str) -> tuple[tuple[str, float], ...] | str:
     logger.info(f"Extracted {len(closes)} closing prices for {ticker}")
 
     return closes
+
+
+@lru_cache(maxsize=128)
+def _fetch_daily_closes_yfinance(ticker: str) -> tuple[tuple[str, float], ...] | str:
+    """Returns list of closing prices (newest first) or an error string."""
+    try:
+        history = yf.Ticker(ticker).history(period="6mo")  # ~125 trading days
+    except Exception as e:
+        return str(e)
+
+    if history.empty:
+        return f"No time-series data returned for {ticker}"
+
+    logger.info(f"Fetched data for {ticker} via yfinance")
+    dates = [ts.strftime("%Y-%m-%d") for ts in history.index]
+    closes = tuple(zip(dates, history["Close"].astype(float)))[::-1]
+    logger.info(f"Extracted {len(closes)} closing prices for {ticker}")
+
+    return closes
+
+
+def _fetch_daily_closes(ticker: str) -> tuple[tuple[str, float], ...] | str:
+    """Dispatches to the configured market-data provider (see Settings.data_provider)."""
+    if settings.data_provider == "yfinance":
+        return _fetch_daily_closes_yfinance(ticker)
+    return _fetch_daily_closes_alpha_vantage(ticker)
 
 
 def _annualised_volatility(closes: tuple[tuple[str, float], ...]) -> float:
