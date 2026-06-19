@@ -46,43 +46,8 @@ def get_asset_volatility(ticker: str) -> dict:
         "days_used": len(closes),
     }
 
-
-# def compute_portfolio_volatility_zero_correlation(tickers: list[str], weights: list[float]) -> dict:
-#     """Computes portfolio volatility assuming zero correlation between assets.
-
-#     Note: assumes zero correlation — real portfolio variance is wᵀ Σ w where
-#     Σ is the asset covariance matrix. This uses sqrt(Σ (w_i * σ_i)²).
-
-#     Args:
-#         tickers: List of ticker symbols.
-#         weights: List of portfolio weights. Must sum to 1.0 and match tickers length.
-
-#     Returns:
-#         A dict with 'status' and either 'portfolio_volatility' or 'error_message'.
-#     """
-#     if len(tickers) != len(weights):
-#         return {"status": "error", "error_message": "tickers and weights length mismatch"}
-#     if abs(sum(weights) - 1.0) > 0.01:
-#         return {"status": "error", "error_message": f"weights must sum to 1.0, got {sum(weights):.3f}"}
-
-#     variance = 0.0
-#     asset_vols = {}
-#     for ticker, w in zip(tickers, weights):
-#         result = get_asset_volatility(ticker)
-#         if result["status"] == "error":
-#             return {"status": "error", "error_message": f"{ticker}: {result['error_message']}"}
-#         vol = result["volatility"]
-#         asset_vols[ticker.upper()] = vol
-#         variance += (w * vol) ** 2
-
-#     return {
-#         "status": "success",
-#         "portfolio_volatility": math.sqrt(variance),
-#         "asset_volatilities": asset_vols,
-#         "method": "assumes zero correlation",
-#     }
-
-def compute_portfolio_volatility(tickers: list[str], weights: list[float]) -> dict:
+# note that this is not using factor models or other advanced risk models; it is a simple historical volatility calculation based on live market data and correlations.
+def compute_portfolio_volatility(tickers: list[str], weights: list[float], benchmark_ticker: str = "SPY") -> dict:
     """Computes portfolio volatility using live market data and calculated correlations."""
     if len(tickers) != len(weights):
         return {"status": "error", "error_message": "tickers and weights length mismatch"}
@@ -92,11 +57,26 @@ def compute_portfolio_volatility(tickers: list[str], weights: list[float]) -> di
     w = np.array(weights)
 
     try:
-        aligned_data = _align_time_series(tickers)
-        returns_matrix = _log_returns_matrix(aligned_data, tickers)
-        cov_matrix = np.cov(returns_matrix, rowvar=False) * 252  # annualised covariance matrix
+        all_tickers = tickers + [benchmark_ticker]
+
+        aligned_data = _align_time_series(all_tickers)
+        returns_matrix = _log_returns_matrix(aligned_data, all_tickers)
+
+        asset_returns = returns_matrix[:, :-1]  # exclude benchmark returns
+        benchmark_returns = returns_matrix[:, -1]  # benchmark returns
+
+        cov_matrix = np.cov(asset_returns, rowvar=False) * 252  # annualised covariance matrix
         portfolio_variance = w @ cov_matrix @ w.T
         portfolio_volatility = math.sqrt(portfolio_variance)
+
+        portfolio_returns = asset_returns @ w
+        active_returns = portfolio_returns - benchmark_returns
+        tracking_error = float(np.std(active_returns, ddof=1) * np.sqrt(252))  # annualised tracking error
+
+        sigma_w = cov_matrix @ w # margin contribution to risk
+        component_contributions = w * sigma_w # element-wise: sums to portfolio variance
+        risk_contributions_pct = (component_contributions / portfolio_volatility)
+        risk_contributions = dict(zip(tickers, risk_contributions_pct.tolist()))
 
         asset_vols = np.sqrt(np.diag(cov_matrix))
         correlation_matrix = cov_matrix / np.outer(asset_vols, asset_vols)
@@ -112,6 +92,8 @@ def compute_portfolio_volatility(tickers: list[str], weights: list[float]) -> di
         "correlation_matrix": correlation_matrix.tolist(),
         "days_used": days_used,
         "method": method,
+        "tracking_error": tracking_error,
+        "risk_contributions_pct": risk_contributions,
     }
 
 
@@ -119,11 +101,16 @@ root_agent = Agent(
     model=_build_model(),
     name="portfolio_risk_agent",
     description="Analyses portfolio risk using live market data.",
-    instruction=(
-        "You are a portfolio risk analyst. Help users understand the volatility "
-        "of individual assets and portfolios. Use the tools provided to fetch "
-        "live market data and compute risk. Always be precise about assumptions "
-        "and limitations of any calculation you report."
-    ),
+    instruction=("You are a portfolio risk analyst. Report both total volatility "
+    "(standalone risk) and tracking error (risk relative to a benchmark), "
+    "and explain the difference — total vol matters for absolute drawdown, "
+    "tracking error matters for active management mandates. Reference the "
+    "correlation matrix to explain why portfolio vol differs from a naive "
+    "weighted average of asset vols. Always be precise about assumptions "
+    "and limitations of any calculation. When reporting portfolio risk," 
+    "explain which assets contribute most to total variance using the "
+    "risk_contribution_pct field."),
     tools=[get_asset_volatility, compute_portfolio_volatility],
 )
+
+
